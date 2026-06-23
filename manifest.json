@@ -1,0 +1,14 @@
+{
+  "name": "Cashflow-Cockpit · Schrickel",
+  "short_name": "Cashflow",
+  "description": "Persönliche Ruhestandsplanung – Cashflow nach Klassen",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#EEF1F4",
+  "theme_color": "#0E6E62",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

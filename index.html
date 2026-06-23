@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Cashflow">
+<meta name="theme-color" content="#0E6E62">
+<title>Cashflow-Cockpit · Schrickel</title>
+<link rel="manifest" href="manifest.json">
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:#EEF1F4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+  #root{}
+  #splash{position:fixed;inset:0;background:#EEF1F4;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:999}
+  #splash h2{font-size:22px;font-weight:800;color:#15202B;margin:12px 0 4px;letter-spacing:-0.5px}
+  #splash p{font-size:13px;color:#5A6B79;margin:0}
+  .spin{width:36px;height:36px;border:3px solid #DCE3E9;border-top-color:#0E6E62;border-radius:50%;animation:spin 0.8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+<script>
+  if('serviceWorker' in navigator){
+    window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js'));
+  }
+</script>
+</head>
+<body>
+<div id="splash">
+  <div class="spin"></div>
+  <h2>Cashflow-Cockpit</h2>
+  <p>Schrickel · Ruhestandsplanung</p>
+</div>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+const { BarChart, Bar, LineChart, Line, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList, Legend } = Recharts;
+
+const C = { page:"#EEF1F4",surface:"#FFFFFF",ink:"#15202B",inkSoft:"#5A6B79",hairline:"#DCE3E9",accent:"#0E6E62" };
+const mono = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+const sans = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+
+const SCEN = [{ label:"Alter 60",age:60 },{ label:"Alter 63",age:63 },{ label:"Alter 65",age:65 },{ label:"Alter 67",age:67 }];
+
+const INITIAL = [
+  { id:"drv", name:"DRV – Gesetzliche Rente", color:"#3B5B7A", kind:"fixed",
+    value:2826.39, startAge:63, taxablePct:85, svPct:0,
+    note:"Volle Rente mit Ausgleich (109.474 € Einmalzahlung). Ohne Ausgleich 2.419 € (−407 € / −14,4 %). PKV → kein KV/PV-Abzug; DRV-Zuschuss bis 206,85 €." },
+  { id:"bosch", name:"bAV Bosch (Vorsorgeplan)", color:"#1F8A82", kind:"fixed",
+    value:8012.61, startAge:60, taxablePct:16.8, svPct:0,
+    note:"Laut Auszahlung Netto ≈ Brutto: kein KV/PV-Abzug (PKV). Nur 1.343,18 € (Firma-Stabil) steuerpflichtig." },
+  { id:"brose", name:"bAV Brose (Betriebsrente)", color:"#C2843B", kind:"fixed",
+    value:4451, startAge:67, taxablePct:100, svPct:0,
+    note:"Kontostand 31.12.2025: 53.414 €. Auszahlung mit Alter 67. PKV → kein KV/PV-Abzug." },
+  { id:"div", name:"Dividenden (Depot)", color:"#6E8F4E", kind:"capital",
+    capital:1204676, rate:1.10, kapPct:17.3, startAge:60, taxablePct:0, svPct:0,
+    note:"Stand 23.06.2026: TR 1.033.572 + Comdirect 171.387 €. Brutto-Rendite 1,10 %. Effektive Steuer ~17,3 %." },
+  { id:"zins", name:"Zinsen Barmittel", color:"#7C6CA6", kind:"capital",
+    capital:156400.44, rate:3.5, kapPct:26.375, startAge:60, taxablePct:0, svPct:0,
+    note:"Barmittel × Zinssatz ÷ 12. Trade Republic, 3,50 % p.a. Abgeltungsteuer 26,375 %." },
+  { id:"sonst", name:"Miete (Vermietung)", color:"#94897A", kind:"fixed",
+    value:1200, startAge:60, taxablePct:100, svPct:0,
+    note:"Mieteinnahmen brutto, voll steuerpflichtig. Vor Abzug Werbungskosten/AfA." },
+  { id:"frau_gehalt", name:"Gehalt Ehefrau (StKl. 5)", color:"#D4A14A", kind:"fixed",
+    value:4700, startAge:60, endAge:63, taxablePct:100, svPct:22.5, overrideEst:32,
+    note:"4.700 €/Monat brutto, Steuerklasse 5. Lohnsteuer ~32 % (editierbar). SV ~22,5 % (GKV). Endet mit Alter 63." },
+  { id:"beratung", name:"Beratung", color:"#4A7BA6", kind:"fixed",
+    value:16666.67, startAge:60, endAge:63, taxablePct:100, svPct:0,
+    note:"200.000 €/Jahr brutto, nur bis Alter 63. Voll steuerpflichtig." },
+  { id:"entnahme", name:"Depot-Entnahme", color:"#A4548C", kind:"drawdown",
+    value:4166.67, startAge:63, taxablePct:0, svPct:0, kapPct:15,
+    note:"50.000 €/Jahr Entnahme aus Depot, ab Alter 63. Nur Gewinnanteil steuerpflichtig (~15 %)." },
+];
+
+const eur  = n => new Intl.NumberFormat("de-DE",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(n||0);
+const eur2 = n => new Intl.NumberFormat("de-DE",{style:"currency",currency:"EUR",minimumFractionDigits:2,maximumFractionDigits:2}).format(n||0);
+const num  = v => Number(v)||0;
+const gross = r => r.kind==="capital" ? (num(r.capital)*num(r.rate))/100/12 : num(r.value);
+const isActive = (r,age) => r.startAge<=age && (r.endAge==null || age<r.endAge);
+const fmtDate  = iso => { try{ return new Date(iso+"T00:00:00").toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit",year:"numeric"}); }catch{return iso;} };
+const todayISO = () => new Date().toISOString().slice(0,10);
+
+const BIRTH = new Date(1965,11,8);
+const ageNow = () => {
+  const now=new Date(); let age=now.getFullYear()-BIRTH.getFullYear();
+  const m=now.getMonth()-BIRTH.getMonth();
+  if(m<0||(m===0&&now.getDate()<BIRTH.getDate())) age--;
+  return age;
+};
+
+function Field({ label, suffix, value, onChange, step="0.01", w }) {
+  return (
+    <label style={{display:"block",flex:w||"1 1 120px"}}>
+      <span style={{display:"block",fontSize:10,letterSpacing:0.6,textTransform:"uppercase",color:C.inkSoft,marginBottom:3}}>{label}</span>
+      <span style={{display:"flex",alignItems:"center",border:`1px solid ${C.hairline}`,borderRadius:8,background:"#FBFCFD",overflow:"hidden"}}>
+        <input type="number" step={step} value={value} onChange={e=>onChange(e.target.value)}
+          style={{width:"100%",border:"none",outline:"none",background:"transparent",padding:"8px 10px",fontFamily:mono,fontSize:14,color:C.ink,textAlign:"right",fontVariantNumeric:"tabular-nums"}} />
+        {suffix&&<span style={{padding:"0 10px",color:C.inkSoft,fontSize:13,fontFamily:mono}}>{suffix}</span>}
+      </span>
+    </label>
+  );
+}
+
+function AgeSeg({ value, onChange, color }) {
+  return (
+    <div style={{display:"inline-flex",border:`1px solid ${C.hairline}`,borderRadius:999,overflow:"hidden"}}>
+      {[60,63,65,67].map(a=>(
+        <button key={a} onClick={()=>onChange(a)} style={{border:"none",cursor:"pointer",padding:"4px 11px",fontSize:11,
+          background:value===a?color:"transparent",color:value===a?"#fff":C.inkSoft,fontWeight:value===a?700:400}}>ab {a}</button>
+      ))}
+    </div>
+  );
+}
+
+function CashflowCockpit() {
+  const [rows,setRows]   = useState(INITIAL);
+  const [net,setNet]     = useState(true);
+  const [estRate,setEstRate] = useState(35);
+  const [pkvSelf,setPkvSelf] = useState(780);
+  const [pkvKid,setPkvKid]   = useState(396);
+  const [openTax,setOpenTax] = useState(false);
+
+  /* Depot-Tracking (localStorage) */
+  const [snapshots,setSnapshots]   = useState([]);
+  const [trackLoaded,setTrackLoaded] = useState(false);
+  const [fDate,setFDate] = useState(todayISO());
+  const [fD1,setFD1]="";  const [_fD1,_setFD1] = useState("");
+  const [fD2,setFD2]="";  const [_fD2,_setFD2] = useState("");
+  const [fDiv,setFDiv]="";const [_fDiv,_setFDiv] = useState("");
+
+  const STORAGE_KEY = "cashflow-depot-snapshots";
+  const DEFAULT_SNAPSHOTS = [
+    { date:"2026-06-19", d1:1024548.27, d2:196211,    div12m:10265.67 },
+    { date:"2026-06-23", d1:1033572.16, d2:171387.36, div12m:12840.72 },
+  ];
+
+  useEffect(()=>{
+    try{
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if(stored){ setSnapshots(JSON.parse(stored)); }
+      else{ setSnapshots(DEFAULT_SNAPSHOTS); localStorage.setItem(STORAGE_KEY,JSON.stringify(DEFAULT_SNAPSHOTS)); }
+    } catch(e){ setSnapshots(DEFAULT_SNAPSHOTS); }
+    setTrackLoaded(true);
+  },[]);
+
+  const saveSnapshots = next => {
+    setSnapshots(next);
+    try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(next)); } catch(e){}
+  };
+  const addSnapshot = () => {
+    if(!fDate||(!_fD1&&!_fD2)) return;
+    const entry = { date:fDate, d1:num(_fD1), d2:num(_fD2), div12m:_fDiv===""?null:num(_fDiv) };
+    const next = [...snapshots.filter(s=>s.date!==fDate), entry].sort((a,b)=>a.date.localeCompare(b.date));
+    saveSnapshots(next);
+    _setFD1(""); _setFD2(""); _setFDiv(""); setFDate(todayISO());
+  };
+  const deleteSnapshot = date => saveSnapshots(snapshots.filter(s=>s.date!==date));
+
+  const sortedSnapshots = useMemo(()=>[...snapshots].sort((a,b)=>a.date.localeCompare(b.date)),[snapshots]);
+  const trackChartData  = useMemo(()=>sortedSnapshots.map(s=>({date:fmtDate(s.date),d1:s.d1,d2:s.d2,total:num(s.d1)+num(s.d2)})),[sortedSnapshots]);
+
+  /* Depot-Projektion */
+  const startAge = ageNow();
+  const currentYear = new Date().getFullYear();
+  const [projStart,setProjStart] = useState(1204676);
+  const [projRate,setProjRate]   = useState(6);
+  const [projFlow,setProjFlow]   = useState(-50000);
+  const [projInfl,setProjInfl]   = useState(2);
+  const [projWithdrawAge,setProjWithdrawAge] = useState(63);
+
+  const ageSteps = useMemo(()=>{
+    const steps=[]; let a=startAge; while(a<85){steps.push(a);a+=5;} steps.push(85);
+    return [...new Set(steps)];
+  },[startAge]);
+
+  const projection = useMemo(()=>{
+    const PV=num(projStart), r=num(projRate)/100, Cf=num(projFlow), i=num(projInfl)/100, wAge=num(projWithdrawAge);
+    return ageSteps.map(age=>{
+      const tTotal=age-startAge;
+      const tBefore=Math.max(0,Math.min(tTotal,wAge-startAge));
+      const V0=PV*Math.pow(1+r,tBefore);
+      const tAfter=tTotal-tBefore;
+      const gA=Math.pow(1+r,tAfter);
+      const nominal=tAfter<=0?V0:(r!==0?V0*gA+Cf*((gA-1)/r):V0+Cf*tAfter);
+      const real=i!==0?nominal/Math.pow(1+i,tTotal):nominal;
+      return {age,year:currentYear+tTotal,t:tTotal,nominal,real};
+    });
+  },[ageSteps,startAge,currentYear,projStart,projRate,projFlow,projInfl,projWithdrawAge]);
+
+  const update = (id,patch)=>setRows(rs=>rs.map(r=>r.id===id?{...r,...patch}:r));
+  const reset  = ()=>{setRows(INITIAL);setEstRate(35);setPkvSelf(780);setPkvKid(396);setNet(true);};
+
+  const netMonthly = r => {
+    const g=gross(r);
+    if(r.kind==="capital"||r.kind==="drawdown") return g-g*num(r.kapPct)/100;
+    const eRate=r.overrideEst!=null?num(r.overrideEst):num(estRate);
+    return g-g*(num(r.taxablePct)/100)*(eRate/100)-g*(num(r.svPct)/100);
+  };
+  const valOf = r => net?netMonthly(r):gross(r);
+
+  const totals = useMemo(()=>SCEN.map(s=>{
+    const act=rows.filter(r=>isActive(r,s.age));
+    const drv=act.find(r=>r.id==="drv");
+    const zuschuss=drv?gross(drv)*0.0855:0;
+    const netSum=act.reduce((x,r)=>x+netMonthly(r),0);
+    const pkv=num(pkvSelf)+(s.age<63?num(pkvKid):0);
+    return {...s,view:act.reduce((x,r)=>x+valOf(r),0),gross:act.reduce((x,r)=>x+gross(r),0),
+      net:netSum,zuschuss,pkv,avail:netSum-pkv+zuschuss};
+  }),[rows,net,estRate,pkvSelf,pkvKid]);
+
+  const chartData = useMemo(()=>SCEN.map(s=>{
+    const row={szenario:s.label};
+    rows.forEach(r=>{ row[r.id]=isActive(r,s.age)?valOf(r):0; });
+    return row;
+  }),[rows,net,estRate]);
+
+  const exportCSV = ()=>{
+    const f=n=>(n||0).toFixed(2).replace(".",",");
+    const L=["sep=;","Cashflow-Cockpit Export – Schrickel",`Ansicht;${net?"Netto":"Brutto"};Grenzsteuersatz;${f(estRate)}%`,"",
+      "Klasse;Typ;Beginn;Brutto/Monat;ESt;SV;KapSt;Netto/Monat;Netto/Jahr"];
+    rows.forEach(r=>{
+      const g=gross(r), n=netMonthly(r);
+      const est=(r.kind==="capital"||r.kind==="drawdown")?0:g*(num(r.taxablePct)/100)*(num(estRate)/100);
+      const sv=(r.kind==="capital"||r.kind==="drawdown")?0:g*(num(r.svPct)/100);
+      const kap=(r.kind==="capital"||r.kind==="drawdown")?g*num(r.kapPct)/100:0;
+      L.push([r.name,r.kind,"Alter "+r.startAge+(r.endAge!=null?" bis "+r.endAge:""),f(g),f(est),f(sv),f(kap),f(n),f(n*12)].join(";"));
+    });
+    L.push(""); L.push(`PKV du/Monat;${f(pkvSelf)};PKV Tochter (bis 63);${f(pkvKid)}`);
+    totals.forEach(t=>L.push(`SUMME ${t.label};;;${f(t.gross)};;;;${f(t.net)};${f(t.net*12)}`));
+    L.push(""); L.push("Szenario;Netto;DRV-Zuschuss;PKV;Verfügbar/Monat;Verfügbar/Jahr");
+    totals.forEach(t=>L.push(`${t.label};${f(t.net)};${f(t.zuschuss)};${f(t.pkv)};${f(t.avail)};${f(t.avail*12)}`));
+    const blob=new Blob([L.join("\n")],{type:"text/csv;charset=utf-8;"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download="cashflow_netto.csv"; a.click(); URL.revokeObjectURL(url);
+  };
+
+  const TBox = ({active,payload,label})=>{
+    if(!active||!payload) return null;
+    const items=payload.filter(p=>p.value>0), sum=items.reduce((s,p)=>s+p.value,0);
+    return (
+      <div style={{background:C.surface,border:`1px solid ${C.hairline}`,borderRadius:10,padding:"10px 12px",boxShadow:"0 8px 24px rgba(21,32,43,.12)",fontFamily:sans}}>
+        <div style={{fontSize:11,color:C.inkSoft,marginBottom:6}}>{label} · {net?"netto":"brutto"}</div>
+        {items.slice().reverse().map(p=>{
+          const r=rows.find(x=>x.id===p.dataKey);
+          return (<div key={p.dataKey} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,marginBottom:3}}>
+            <span style={{width:9,height:9,borderRadius:2,background:r.color}}/>
+            <span style={{color:C.ink,flex:1}}>{r.name}</span>
+            <span style={{fontFamily:mono,fontVariantNumeric:"tabular-nums"}}>{eur(p.value)}</span>
+          </div>);
+        })}
+        <div style={{borderTop:`1px solid ${C.hairline}`,marginTop:6,paddingTop:6,display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700}}>
+          <span>Summe</span><span style={{fontFamily:mono,fontVariantNumeric:"tabular-nums"}}>{eur(sum)}</span>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:C.page,color:C.ink,fontFamily:sans,padding:"env(safe-area-inset-top,20px) 16px 48px"}}>
+      <div style={{maxWidth:880,margin:"0 auto"}}>
+
+        {/* Header */}
+        <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:4}}>
+          <div>
+            <div style={{fontSize:10,letterSpacing:2,textTransform:"uppercase",color:C.accent,fontWeight:700}}>Ruhestand · Schrickel · Rente ab 63</div>
+            <h1 style={{margin:"2px 0 0",fontSize:28,letterSpacing:-0.8,fontWeight:800}}>Cashflow-Cockpit</h1>
+          </div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button onClick={()=>setNet(!net)} style={{border:`1px solid ${net?C.accent:C.hairline}`,background:net?C.accent:C.surface,color:net?"#fff":C.inkSoft,borderRadius:8,padding:"7px 12px",fontSize:12,cursor:"pointer"}}>{net?"Netto":"Brutto"}</button>
+            <button onClick={exportCSV} style={{border:"none",background:C.ink,color:"#fff",borderRadius:8,padding:"7px 12px",fontSize:12,cursor:"pointer",fontWeight:600}}>CSV</button>
+            <button onClick={reset} style={{border:`1px solid ${C.hairline}`,background:C.surface,color:C.inkSoft,borderRadius:8,padding:"7px 12px",fontSize:12,cursor:"pointer"}}>Reset</button>
+          </div>
+        </div>
+        <p style={{margin:"2px 0 16px",color:C.inkSoft,fontSize:13}}>Monatliche Einkünfte · {net?"netto (Schätzung)":"brutto"}</p>
+
+        {/* Steuer & PKV */}
+        <div style={{background:C.surface,border:`1px solid ${C.hairline}`,borderRadius:14,padding:"12px 16px",marginBottom:16}}>
+          <button onClick={()=>setOpenTax(!openTax)} style={{border:"none",background:"none",cursor:"pointer",padding:0,fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.inkSoft,fontWeight:700}}>Steuer & PKV {openTax?"▾":"▸"}</button>
+          {openTax&&(
+            <div style={{display:"flex",gap:12,flexWrap:"wrap",marginTop:12}}>
+              <Field label="Grenzsteuersatz" suffix="%" step="0.5" value={estRate} onChange={setEstRate} w="1 1 120px"/>
+              <Field label="PKV du / Monat" suffix="€" step="1" value={pkvSelf} onChange={setPkvSelf} w="1 1 130px"/>
+              <Field label="PKV Tochter (bis 63)" suffix="€" step="1" value={pkvKid} onChange={setPkvKid} w="1 1 140px"/>
+              <p style={{flex:"2 1 260px",margin:0,fontSize:11,color:C.inkSoft,lineHeight:1.5}}>
+                PKV du 780 € (dauerhaft), Tochter 396 € bis Alter 63. DRV-Zuschuss ≈ 241 € ab 63. ~947 € steuerlich absetzbar.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Hero-Karten */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:12,marginBottom:16}}>
+          {totals.map((s,i)=>(
+            <div key={s.label} style={{background:C.surface,border:`1px solid ${C.hairline}`,borderRadius:14,padding:"14px 16px"}}>
+              <div style={{fontSize:11,color:C.inkSoft}}>{s.label}{s.age===startAge?" · heute":` · ${currentYear+(s.age-startAge)}`}</div>
+              <div style={{fontFamily:mono,fontVariantNumeric:"tabular-nums",fontSize:24,fontWeight:700,letterSpacing:-1,marginTop:4,color:i===SCEN.length-1?C.accent:C.ink}}>{eur2(s.view)}</div>
+              <div style={{fontSize:11,color:C.inkSoft,marginTop:2}}>≈ {eur(s.view*12)} / Jahr</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Stapelbalken-Chart */}
+        <div style={{background:C.surface,border:`1px solid ${C.hairline}`,borderRadius:14,padding:"16px 12px 8px",marginBottom:16}}>
+          <div style={{height:340,width:"100%"}}>
+            <ResponsiveContainer>
+              <BarChart data={chartData} margin={{top:28,right:8,left:0,bottom:0}} barCategoryGap="26%">
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={C.hairline}/>
+                <XAxis dataKey="szenario" tick={{fontSize:12,fill:C.ink}} axisLine={{stroke:C.hairline}} tickLine={false}/>
+                <YAxis tickFormatter={v=>`${(v/1000).toFixed(0)}k`} tick={{fontSize:11,fill:C.inkSoft,fontFamily:mono}} axisLine={false} tickLine={false} width={42}/>
+                <Tooltip content={<TBox/>} cursor={{fill:"rgba(14,110,98,.06)"}}/>
+                {rows.map((r,i)=>(
+                  <Bar key={r.id} dataKey={r.id} stackId="a" fill={r.color} radius={i===rows.length-1?[5,5,0,0]:0} maxBarSize={120}>
+                    {i===rows.length-1&&(
+                      <LabelList position="top" valueAccessor={e=>{ const d=e.payload,s=rows.reduce((x,x2)=>x+(d[x2.id]||0),0); return s>0?eur(s):""; }}
+                        style={{fill:C.ink,fontSize:12,fontWeight:700,fontFamily:mono}}/>
+                    )}
+                  </Bar>
+                ))}
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Eingabemaske Ledger */}
+        <div style={{background:C.surface,border:`1px solid ${C.hairline}`,borderRadius:14,overflow:"hidden"}}>
+          <div style={{padding:"12px 16px",borderBottom:`1px solid ${C.hairline}`,fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.inkSoft,fontWeight:700}}>Eingabemaske · Klassen</div>
+          {rows.map(r=>{
+            const g=gross(r),n=netMonthly(r),shown=net?n:g;
+            return (
+              <div key={r.id} style={{padding:"14px 16px",borderBottom:`1px solid ${C.hairline}`,borderLeft:`4px solid ${r.color}`}}>
+                <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-start"}}>
+                  <div style={{flex:"1 1 200px",minWidth:180}}>
+                    <div style={{fontWeight:700,fontSize:14}}>{r.name}</div>
+                    <div style={{fontSize:11,color:C.inkSoft,marginTop:3,lineHeight:1.4}}>{r.note}</div>
+                    <div style={{marginTop:8,display:"flex",alignItems:"center",gap:8}}>
+                      <AgeSeg value={r.startAge} onChange={a=>update(r.id,{startAge:a})} color={r.color}/>
+                      {r.endAge!=null&&<span style={{fontSize:10,color:C.inkSoft,background:C.page,borderRadius:999,padding:"3px 9px"}}>bis {r.endAge}</span>}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:10,flex:"1 1 260px",flexWrap:"wrap",alignItems:"flex-end"}}>
+                    {r.kind==="capital"?(
+                      <><Field label="Kapital" suffix="€" step="1" value={r.capital} onChange={v=>update(r.id,{capital:v})} w="1 1 130px"/>
+                        <Field label="Rate p.a." suffix="%" step="0.1" value={r.rate} onChange={v=>update(r.id,{rate:v})} w="0 1 90px"/></>
+                    ):(
+                      <Field label="Betrag / Monat" suffix="€" value={r.value} onChange={v=>update(r.id,{value:v})} w="1 1 160px"/>
+                    )}
+                    <div style={{minWidth:110,textAlign:"right",paddingBottom:8}}>
+                      <div style={{fontSize:10,color:C.inkSoft,textTransform:"uppercase",letterSpacing:0.6}}>{net?"netto/M":"brutto/M"}</div>
+                      <div style={{fontFamily:mono,fontVariantNumeric:"tabular-nums",fontSize:16,fontWeight:700,color:shown>0?C.ink:C.inkSoft}}>{eur2(shown)}</div>
+                      {net&&r.kind!=="capital"&&g>0&&<div style={{fontSize:10,color:C.inkSoft,fontFamily:mono}}>von {eur(g)}</div>}
+                    </div>
+                  </div>
+                </div>
+                {net&&(
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:10,paddingTop:10,borderTop:`1px dashed ${C.hairline}`}}>
+                    {(r.kind==="capital"||r.kind==="drawdown")?(
+                      <><Field label="Kapitalsteuer" suffix="%" step="0.1" value={r.kapPct} onChange={v=>update(r.id,{kapPct:v})} w="0 1 120px"/>
+                        <span style={{fontSize:11,color:C.inkSoft,alignSelf:"flex-end",paddingBottom:8}}>Steuer −{eur(g*num(r.kapPct)/100)}/M</span></>
+                    ):(
+                      <><Field label="Steuerpfl. Anteil" suffix="%" step="1" value={r.taxablePct} onChange={v=>update(r.id,{taxablePct:v})} w="0 1 120px"/>
+                        {r.overrideEst!=null&&<Field label="Lohnsteuer %" suffix="%" step="0.5" value={r.overrideEst} onChange={v=>update(r.id,{overrideEst:v})} w="0 1 110px"/>}
+                        <Field label="KV+PV+SV" suffix="%" step="0.1" value={r.svPct} onChange={v=>update(r.id,{svPct:v})} w="0 1 110px"/>
+                        <span style={{fontSize:11,color:C.inkSoft,alignSelf:"flex-end",paddingBottom:8}}>
+                          ESt −{eur(g*(num(r.taxablePct)/100)*((r.overrideEst!=null?num(r.overrideEst):num(estRate))/100))} · SV −{eur(g*(num(r.svPct)/100))}
+                        </span></>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <div style={{padding:"14px 16px",background:"#F7F9FA",display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+            <span style={{fontWeight:700}}>Summe {net?"netto":"brutto"} / Monat</span>
+            <span style={{display:"flex",gap:18,fontSize:13,flexWrap:"wrap"}}>
+              {totals.map((t,i)=>(<span key={t.label} style={{color:C.inkSoft}}>{t.label} <b style={{color:i===SCEN.length-1?C.accent:C.ink,fontFamily:mono,fontVariantNumeric:"tabular-nums"}}>{eur2(t.view)}</b></span>))}
+            </span>
+          </div>
+          {(num(pkvSelf)>0||num(pkvKid)>0)&&(
+            <div style={{padding:"12px 16px",background:"#FDF7F2",borderTop:`1px solid ${C.hairline}`,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+              <span style={{fontWeight:700,color:"#9A5B2A"}}>Verfügbar nach PKV</span>
+              <span style={{display:"flex",gap:18,fontSize:13,flexWrap:"wrap"}}>
+                {totals.map((t,i)=>(<span key={t.label} style={{color:C.inkSoft}}>{t.label} <b style={{color:i===SCEN.length-1?C.accent:"#9A5B2A",fontFamily:mono,fontVariantNumeric:"tabular-nums"}}>{eur2(t.avail)}</b>
+                  <span style={{fontSize:10}}> (−{eur(t.pkv)}{t.zuschuss>0?` +${eur(t.zuschuss)} Zusch.`:""})</span></span>))}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Depot-Tracking */}
+        <div style={{background:C.surface,border:`1px solid ${C.hairline}`,borderRadius:14,overflow:"hidden",marginTop:16}}>
+          <div style={{padding:"12px 16px",borderBottom:`1px solid ${C.hairline}`,fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.inkSoft,fontWeight:700}}>Depot-Tracking · Vermögensentwicklung</div>
+          {!trackLoaded?(<div style={{padding:24,textAlign:"center",color:C.inkSoft,fontSize:12}}>Lädt…</div>):(
+            <>
+              <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.hairline}`,display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+                <label style={{display:"block",flex:"1 1 140px"}}>
+                  <span style={{display:"block",fontSize:10,letterSpacing:0.6,textTransform:"uppercase",color:C.inkSoft,marginBottom:3}}>Datum</span>
+                  <input type="date" value={fDate} onChange={e=>setFDate(e.target.value)}
+                    style={{width:"100%",border:`1px solid ${C.hairline}`,borderRadius:8,background:"#FBFCFD",padding:"8px 10px",fontFamily:mono,fontSize:13,color:C.ink}}/>
+                </label>
+                <Field label="Trade Republic" suffix="€" step="1" value={_fD1} onChange={_setFD1} w="1 1 130px"/>
+                <Field label="Comdirect" suffix="€" step="1" value={_fD2} onChange={_setFD2} w="1 1 130px"/>
+                <Field label="Dividenden 12M" suffix="€" step="1" value={_fDiv} onChange={_setFDiv} w="1 1 130px"/>
+                <button onClick={addSnapshot} style={{border:"none",background:C.accent,color:"#fff",borderRadius:8,padding:"9px 16px",fontSize:12,fontWeight:700,cursor:"pointer",height:38}}>+ Eintrag</button>
+              </div>
+              {trackChartData.length>1&&(
+                <div style={{padding:"16px 12px 4px"}}>
+                  <div style={{height:200,width:"100%"}}>
+                    <ResponsiveContainer>
+                      <LineChart data={trackChartData} margin={{top:8,right:8,left:0,bottom:0}}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={C.hairline}/>
+                        <XAxis dataKey="date" tick={{fontSize:10,fill:C.inkSoft}} axisLine={{stroke:C.hairline}} tickLine={false}/>
+                        <YAxis tickFormatter={v=>`${(v/1000).toFixed(0)}k`} tick={{fontSize:10,fill:C.inkSoft,fontFamily:mono}} axisLine={false} tickLine={false} width={42}/>
+                        <Tooltip formatter={v=>eur2(v)} contentStyle={{fontSize:12,borderRadius:8,border:`1px solid ${C.hairline}`}}/>
+                        <Legend wrapperStyle={{fontSize:11}}/>
+                        <Line type="monotone" dataKey="total" name="Gesamt" stroke={C.ink} strokeWidth={2.5} dot={{r:3}}/>
+                        <Line type="monotone" dataKey="d1" name="Trade Republic" stroke="#1F8A82" strokeWidth={1.5} dot={{r:2}}/>
+                        <Line type="monotone" dataKey="d2" name="Comdirect" stroke="#6E8F4E" strokeWidth={1.5} dot={{r:2}}/>
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+              {[...sortedSnapshots].reverse().map((s,i,arr)=>{
+                const total=num(s.d1)+num(s.d2), prev=arr[i+1];
+                const delta=prev?total-(num(prev.d1)+num(prev.d2)):null;
+                return (
+                  <div key={s.date} style={{padding:"10px 16px",borderBottom:`1px solid ${C.hairline}`,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,color:C.inkSoft,minWidth:78}}>{fmtDate(s.date)}</span>
+                    <span style={{fontSize:12,fontFamily:mono,color:C.inkSoft,minWidth:90}}>TR {eur(s.d1)}</span>
+                    <span style={{fontSize:12,fontFamily:mono,color:C.inkSoft,minWidth:90}}>CD {eur(s.d2)}</span>
+                    <span style={{fontSize:13,fontFamily:mono,fontWeight:700,color:C.ink,flex:1,textAlign:"right",minWidth:100}}>{eur(total)}</span>
+                    {delta!==null&&(<span style={{fontSize:11,fontFamily:mono,color:delta>=0?C.accent:"#B23A3A",minWidth:70,textAlign:"right"}}>{delta>=0?"+":""}{eur(delta)}</span>)}
+                    <button onClick={()=>deleteSnapshot(s.date)} style={{border:"none",background:"transparent",color:C.inkSoft,cursor:"pointer",fontSize:14,padding:"2px 6px"}}>✕</button>
+                  </div>
+                );
+              })}
+              {sortedSnapshots.length===0&&(<div style={{padding:20,textAlign:"center",color:C.inkSoft,fontSize:12}}>Noch keine Einträge.</div>)}
+            </>
+          )}
+        </div>
+
+        {/* Depot-Projektion */}
+        <div style={{background:C.surface,border:`1px solid ${C.hairline}`,borderRadius:14,overflow:"hidden",marginTop:16}}>
+          <div style={{padding:"12px 16px",borderBottom:`1px solid ${C.hairline}`,fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.inkSoft,fontWeight:700}}>
+            Depot-Projektion · Alter {startAge} bis 85
+          </div>
+          <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.hairline}`,display:"flex",gap:10,flexWrap:"wrap"}}>
+            <Field label="Startkapital" suffix="€" step="1" value={projStart} onChange={setProjStart} w="1 1 140px"/>
+            <Field label="Rendite p.a." suffix="%" step="0.1" value={projRate} onChange={setProjRate} w="0 1 110px"/>
+            <Field label="Ein-/Auszahlung p.a." suffix="€" step="100" value={projFlow} onChange={setProjFlow} w="1 1 150px"/>
+            <Field label="ab Alter" suffix="J" step="1" value={projWithdrawAge} onChange={setProjWithdrawAge} w="0 1 100px"/>
+            <Field label="Inflation p.a." suffix="%" step="0.1" value={projInfl} onChange={setProjInfl} w="0 1 110px"/>
+          </div>
+          <div style={{padding:"12px 12px 4px"}}>
+            <div style={{height:260,width:"100%"}}>
+              <ResponsiveContainer>
+                <ComposedChart data={projection} margin={{top:24,right:8,left:0,bottom:0}}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={C.hairline}/>
+                  <XAxis dataKey="age" tick={{fontSize:11,fill:C.ink}} axisLine={{stroke:C.hairline}} tickLine={false}/>
+                  <YAxis tickFormatter={v=>`${(v/1000).toFixed(0)}k`} tick={{fontSize:10,fill:C.inkSoft,fontFamily:mono}} axisLine={false} tickLine={false} width={42}/>
+                  <Tooltip formatter={(v,n)=>[eur(v),n==="nominal"?"Nominal":"Real"]}
+                    labelFormatter={a=>{ const p=projection.find(x=>x.age===a); return `Alter ${a} · ${p?p.year:""}`; }}
+                    contentStyle={{fontSize:12,borderRadius:8,border:`1px solid ${C.hairline}`}}/>
+                  <Legend wrapperStyle={{fontSize:11}} formatter={v=>v==="nominal"?"Nominal":"Real (Kaufkraft)"}/>
+                  <Bar dataKey="nominal" fill={C.accent} radius={[5,5,0,0]} maxBarSize={56}>
+                    <LabelList dataKey="nominal" position="top" formatter={v=>eur(v)} style={{fill:C.ink,fontSize:10,fontWeight:700,fontFamily:mono}}/>
+                  </Bar>
+                  <Line type="monotone" dataKey="real" stroke="#9A5B2A" strokeWidth={2} dot={{r:3}}/>
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div style={{padding:"4px 16px 14px"}}>
+            {projection.map(p=>(
+              <div key={p.age} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${C.hairline}`,flexWrap:"wrap"}}>
+                <span style={{fontSize:12,fontWeight:700,color:C.ink,minWidth:70}}>Alter {p.age}</span>
+                <span style={{fontSize:11,color:C.inkSoft,minWidth:50}}>{p.year}</span>
+                <span style={{fontFamily:mono,fontSize:14,fontWeight:700,color:C.ink,flex:1,textAlign:"right"}}>{eur(p.nominal)}</span>
+                <span style={{fontFamily:mono,fontSize:11,color:"#9A5B2A",minWidth:110,textAlign:"right"}}>real {eur(p.real)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <p style={{fontSize:11,color:C.inkSoft,marginTop:14,lineHeight:1.5}}>
+          PKV (Hallesche): kein gesetzlicher KV/PV-Abzug auf Renten. DRV-Zuschuss ab 63 ≈ 241 €. Dividenden: Brutto 1,10 %, effektive Steuer ~17,3 %. DRV mit Ausgleich (109.474 € einmalig). Depot-Projektion: Zinseszins-Hochrechnung, keine Prognose. Keine Steuer-, Anlage- oder Rechtsberatung.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// App starten + Splash entfernen
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<CashflowCockpit/>);
+document.getElementById("splash").remove();
+</script>
+</body>
+</html>
